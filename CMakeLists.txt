@@ -28,14 +28,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(PulseDemo)
 
-# --- Shared dependencies ---------------------------------------------------
-find_package(OpenGL REQUIRED)
-find_package(glfw3 REQUIRED)
-find_package(Threads REQUIRED)
-
-pulse_find_runtime()    # defines the pexip::pulse imported target
-pulse_declare_imgui()   # fetches Dear ImGui + builds the shared `imgui` lib
-
 # ---------------------------------------------------------------------------
 # Demos. Lightweight demos build by default; the heavier ones that need extra
 # system packages are opt-in.
@@ -45,6 +37,20 @@ option(BUILD_GATEWAY     "Build the pulse_gateway two-conference bridge"    ON)
 option(BUILD_PEXNINJA    "Build the larger pexninja reference client"       OFF)
 option(BUILD_DOPPLER_SIP "Build the SIP-signalling demo (needs PJSIP)"      OFF)
 option(BUILD_VIDEOWALL   "Build the videowall multi-Pulse compositor"       ON)
+option(BUILD_PICALL      "Build the headless picall CLI caller"             ON)
+
+# --- Shared dependencies ---------------------------------------------------
+find_package(Threads REQUIRED)
+pulse_find_runtime()    # defines the pexip::pulse imported target
+
+# Only the GUI demos need GLFW/OpenGL/ImGui, so a headless build (e.g. picall
+# on a Raspberry Pi) doesn't have to install them.
+if(BUILD_DOPPLER OR BUILD_GATEWAY OR BUILD_PEXNINJA OR BUILD_DOPPLER_SIP
+   OR BUILD_VIDEOWALL)
+    find_package(OpenGL REQUIRED)
+    find_package(glfw3 REQUIRED)
+    pulse_declare_imgui()   # fetches Dear ImGui + builds the shared `imgui` lib
+endif()
 
 if(BUILD_DOPPLER)
     add_subdirectory(demos/doppler)
@@ -64,4 +70,8 @@ endif()
 
 if(BUILD_VIDEOWALL)
     add_subdirectory(demos/videowall)
+endif()
+
+if(BUILD_PICALL)
+    add_subdirectory(demos/picall)
 endif()
