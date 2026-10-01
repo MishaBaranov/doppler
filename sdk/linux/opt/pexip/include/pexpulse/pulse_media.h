@@ -93,6 +93,22 @@ typedef enum _PulseMediaPixelFormat
 } PulseMediaPixelFormat;
 
 /**
+ * @brief Whether video should be encoded and decoded in hardware.
+ *
+ * Hardware codecs are device specific, so the media engine resolves the
+ * preference to an actual codec when it builds a pipeline. Asking for hardware
+ * on a device that has none is not an error: the built-in software codec is
+ * used instead.
+ */
+typedef enum _PulseVideoCodecPreference
+{
+  /** Use the built-in software codec. This is the default. */
+  PULSE_VIDEO_CODEC_SOFTWARE = 0,
+  /** Use a hardware codec when the device provides a usable one. */
+  PULSE_VIDEO_CODEC_HARDWARE,
+} PulseVideoCodecPreference;
+
+/**
  * @brief Audio sample format types.
  * Defines the sample formats supported for raw audio frames.
  */

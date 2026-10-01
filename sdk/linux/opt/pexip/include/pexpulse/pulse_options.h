@@ -10,6 +10,7 @@
 
 #include "pulse_types.h"
 #include "pulse_error.h"
+#include "pulse_media.h"
 
 PULSE_DECL_BEGIN
 
@@ -84,12 +85,54 @@ PULSE_EXPORT
 PulseError pulse_options_disable_stun_server_support (Pulse * client);
 
 /**
+ * @brief Set the ICE transports Pulse is allowed to use.
+ * This function limits which transports ICE gathers and negotiates candidates for. The mask is a combination of
+ * #PulseIceTransportMask values, and must contain at least one of them. All transports
+ * (#PULSE_ICE_TRANSPORT_MASK_ALL) are allowed by default.
+ * @param client The Pulse handle
+ * @param transport_mask A bitwise OR of #PulseIceTransportMask values
+ * @return PULSE_SUCCESS (0) on success, PULSE_ERROR_INVALID_PARAMETER if the mask is empty or holds unknown bits, or
+ * another PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_allowed_ice_transport (Pulse * client, uint32_t transport_mask);
+
+/**
+ * @brief Set the TURN transports Pulse is allowed to use.
+ * This function limits which TURN servers Pulse registers with ICE, based on the transport each server is offered
+ * over. TURN servers using a transport that is not allowed are discarded. The mask is a combination of
+ * #PulseIceRelayTypeMask values, and must contain at least one of them. All TURN transports
+ * (#PULSE_ICE_RELAY_TYPE_MASK_ALL) are allowed by default. Be aware that pulse_options_set_turn_server_support() set
+ * to false discards every TURN server regardless of this setting.
+ * @param client The Pulse handle
+ * @param turn_transport_mask A bitwise OR of #PulseIceRelayTypeMask values
+ * @return PULSE_SUCCESS (0) on success, PULSE_ERROR_INVALID_PARAMETER if the mask is empty or holds unknown bits, or
+ * another PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_allowed_ice_turn_transport (Pulse * client, uint32_t turn_transport_mask);
+
+/**
+ * @brief Set the IP versions Pulse is allowed to use.
+ * This function limits Pulse to IPv4, to IPv6, or allows both. The mask is a combination of #PulseIpVersionMask
+ * values, and must contain at least one of them. Both IP versions (#PULSE_IP_VERSION_MASK_ALL) are allowed by default.
+ * @param client The Pulse handle
+ * @param ip_version_mask A bitwise OR of #PulseIpVersionMask values
+ * @return PULSE_SUCCESS (0) on success, PULSE_ERROR_INVALID_PARAMETER if the mask is empty or holds unknown bits, or
+ * another PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_ip_version_supported (Pulse * client, uint32_t ip_version_mask);
+
+/**
  * @brief Set IPv6 support enabled state.
  * This function sets IPv6 support to whats specified in the enable parameter. IPv6 server support is enabled by
- * default.
+ * default. It only changes whether IPv6 is allowed, leaving IPv4 as it is.
  * @param client The Pulse handle
  * @param enable The new IPv6 support state
- * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ * @return PULSE_SUCCESS (0) on success, PULSE_ERROR_INVALID_PARAMETER when disabling IPv6 while IPv4 is already
+ * disabled, as that would leave no IP version to use, or another PulseError code in case of a failure.
+ * @deprecated Use pulse_options_set_ip_version_supported() instead, which sets both IP versions in a single call.
  */
 PULSE_EXPORT
 PulseError pulse_options_set_ipv6_support (Pulse * client, bool enable);
@@ -99,6 +142,7 @@ PulseError pulse_options_set_ipv6_support (Pulse * client, bool enable);
  * This function enables IPv6 support. IPv6 support is enabled by default.
  * @param client The Pulse handle
  * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ * @deprecated Use pulse_options_set_ip_version_supported() instead, which sets both IP versions in a single call.
  */
 PULSE_EXPORT
 PulseError pulse_options_enable_ipv6_support (Pulse * client);
@@ -107,7 +151,9 @@ PulseError pulse_options_enable_ipv6_support (Pulse * client);
  * @brief Disable IPv6 support.
  * This function disables IPv6 support. IPv6 support is enabled by default.
  * @param client The Pulse handle
- * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ * @return PULSE_SUCCESS (0) on success, PULSE_ERROR_INVALID_PARAMETER if IPv4 is already disabled, as that would
+ * leave no IP version to use, or another PulseError code in case of a failure.
+ * @deprecated Use pulse_options_set_ip_version_supported() with #PULSE_IP_VERSION_V4 instead.
  */
 PULSE_EXPORT
 PulseError pulse_options_disable_ipv6_support (Pulse * client);
@@ -121,6 +167,21 @@ PulseError pulse_options_disable_ipv6_support (Pulse * client);
  */
 PULSE_EXPORT
 PulseError pulse_options_set_ca_bundle_path (Pulse * client, const char * path);
+
+/**
+ * @brief Trust an additional CA certificate.
+ * Adds a single DER-encoded CA certificate to the set of trust anchors used for TLS verification, on top of the
+ * certificates from the configured CA bundle path. May be called multiple times to add several certificates; all
+ * additions must be made before connecting.
+ * Server certificate verification remains fully enabled; this only widens the set of trusted anchors.
+ * @param client The Pulse handle
+ * @param certificate Pointer to the DER-encoded (X.509) certificate bytes. The data is copied; the caller retains
+ * ownership of the buffer.
+ * @param certificate_len Length in bytes of the certificate buffer.
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_options_add_ca_certificate (Pulse * client, const uint8_t * certificate, size_t certificate_len);
 
 /**
  * @brief Set TLS peer verification enabled state.
@@ -341,6 +402,36 @@ PulseError pulse_options_set_audio_mute_state_changed_callback (Pulse * client, 
                                                                 void * user_context);
 
 /**
+ * @brief Default SCTP stream id for the app data channel.
+ */
+#define PULSE_APP_DATA_CHANNEL_DEFAULT_STREAM_ID 5
+
+/**
+ * @brief Enable or disable the app data channel.
+ * When enabled, the call offers an SCTP data channel (m=application) and asks the server to relay binary
+ * messages sent on @p sctp_stream_id to every other participant that enabled the same stream id. Participants
+ * that did not enable it never receive them. Disabled by default. Must be set before connecting.
+ * @param client The Pulse handle
+ * @param enable The new app data channel state
+ * @param sctp_stream_id SCTP stream id to use, or 0 for PULSE_APP_DATA_CHANNEL_DEFAULT_STREAM_ID. Stream id 3 is
+ * reserved by Pexip and 65535 is invalid.
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_app_data_channel (Pulse * client, bool enable, uint16_t sctp_stream_id);
+
+/**
+ * @brief Set the callback that receives app data channel messages.
+ * Only binary messages are delivered. Must be set before connecting.
+ * @param client The Pulse handle
+ * @param func The callback, or NULL to drop incoming messages.
+ * @param user_context An optional user context to retrieve with this callback.
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_app_data_callback (Pulse * client, PulseAppDataCallback func, void * user_context);
+
+/**
  * @brief Set the fecc (Far End Camera Control/PTZ) callback.
  * This function registers a fecc callback.
  * @param client The Pulse handle
@@ -360,10 +451,41 @@ PulseError pulse_options_set_conference_event_fecc_callback (Pulse * client, Pul
  * be disabled.
  * @param user_context An optional user context to retrieve with this callback.
  * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ * @deprecated Use the type specific callbacks instead (chat/app)
  */
 PULSE_EXPORT
 PulseError pulse_options_set_conference_event_message_received_callback (
   Pulse * client, PulseConferenceEventMessageReceivedCallback func, void * user_context);
+
+/**
+ * @brief Set the chat message_received callback.
+ * This function registers a callback that is a filtered variant of the message_received callback: it only fires for
+ * messages whose content type is "text/plain". The unfiltered message_received callback (if set) is still invoked in
+ * addition to this one.
+ * @param client The Pulse handle
+ * @param func The callback handler for chat message_received callbacks. If the callback is NULL, the callback function
+ * will be disabled.
+ * @param user_context An optional user context to retrieve with this callback.
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_conference_event_chat_message_received_callback (
+  Pulse * client, PulseConferenceEventChatMessageReceivedCallback func, void * user_context);
+
+/**
+ * @brief Set the app message_received callback.
+ * This function registers a callback that is a filtered variant of the message_received callback: it only fires for
+ * messages whose content type is "application/json". The unfiltered message_received callback (if set) is still invoked
+ * in addition to this one.
+ * @param client The Pulse handle
+ * @param func The callback handler for app message_received callbacks. If the callback is NULL, the callback function
+ * will be disabled.
+ * @param user_context An optional user context to retrieve with this callback.
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_conference_event_app_message_received_callback (
+  Pulse * client, PulseConferenceEventAppMessageReceivedCallback func, void * user_context);
 
 /**
  * @brief Set the conference_update callback.
@@ -691,16 +813,6 @@ PULSE_EXPORT
 PulseError pulse_options_set_application_user_agent_string (Pulse * client, const char * user_agent_string);
 
 /**
- * @brief Disable TLS for all http connections, making all traffic unencrypted!
- * Tells Pulse to use unencrypted HTTP communication for all connections.
- * @param client The Pulse handle
- * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
- * @note This is for testing purposes only and should never be used in a production environment.
- */
-PULSE_EXPORT
-PulseError pulse_options_disable_https (Pulse * client);
-
-/**
  * @brief Set AGC (automatic gain control) to the main audio stream.
  * This functions sets automatic gain control mode to the main audio stream.
  * @param client The Pulse handle
@@ -711,15 +823,31 @@ PulseError pulse_options_disable_https (Pulse * client);
 PULSE_EXPORT
 PulseError pulse_options_set_automatic_gain_control (Pulse * client, bool enable);
 
+typedef enum
+{
+  PULSE_DENOISE_BACKEND_RNN = 0,
+  PULSE_DENOISE_BACKEND_DFN = 1,
+} PulseDenoiseBackend;
+
 /**
  * @brief Apply denoising to the main audio stream.
- * This functions sets denoising mode to the main audio stream.
+ * This functions enables denoising mode to the main audio stream.
  * @param client The Pulse handle
  * @param enable The denoising mode.
  * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
  */
 PULSE_EXPORT
-PulseError pulse_options_set_denoise (Pulse * client, bool enable);
+PulseError pulse_options_enable_denoise (Pulse * client, bool enable);
+
+/**
+ * @brief Select denoise backend for the main audio stream.
+ * This function sets which denoise backend model should be used.
+ * @param client The Pulse handle
+ * @param backend The denoise backend model.
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_denoise_backend (Pulse * client, PulseDenoiseBackend backend);
 
 /**
  * @brief Set background blur to the main video stream.
@@ -730,6 +858,62 @@ PulseError pulse_options_set_denoise (Pulse * client, bool enable);
  */
 PULSE_EXPORT
 PulseError pulse_options_set_background_blur (Pulse * client, bool enable);
+
+/**
+ * @brief Enable or disable the changefinder on the main video stream.
+ * Disabling the changefinder also disables face detection and both debug overlays.
+ * Default setting: False. The setting is retained when switching the main camera.
+ * @param client The Pulse handle
+ * @param enable Whether the changefinder should be running.
+ * @return PULSE_SUCCESS on success, or PULSE_ERROR_NOT_CONFIGURED if there is no
+ * main video input. On failure, stored options are unchanged.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_changefinder (Pulse * client, bool enable);
+
+/**
+ * @brief Enable or disable face detection on the main video stream.
+ * Enabling face detection also enables the changefinder for changed-region detection
+ * between periodic full-frame scans. Disabling face detection turns off its debug
+ * overlay, but leaves the changefinder and its overlay unchanged.
+ * Default setting: False. The setting is retained when switching the main camera.
+ * @param client The Pulse handle
+ * @param enable Whether the face detector should be running.
+ * @return PULSE_SUCCESS on success, or PULSE_ERROR_NOT_CONFIGURED if there is no
+ * main video input. On failure, stored options are unchanged.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_facedetection (Pulse * client, bool enable);
+
+/**
+ * @brief Toggle drawing of face detection debug bounding boxes on the main video stream.
+ * Enabling the overlay also enables face detection and the changefinder. This overlay
+ * is independent of pulse_options_set_changefinder_draw_debug() and is for debugging only.
+ * It modifies video frames, including frames sent to remote participants, not just
+ * the local preview. Turning it off leaves face detection and the changefinder enabled.
+ * Default setting: False. The setting is retained when switching the main camera.
+ * @param client The Pulse handle
+ * @param draw_debug Whether to draw the face detection debug overlay.
+ * @return PULSE_SUCCESS on success, or PULSE_ERROR_NOT_CONFIGURED if there is no
+ * main video input. On failure, stored options are unchanged.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_facedetection_draw_debug (Pulse * client, bool draw_debug);
+
+/**
+ * @brief Toggle drawing of changefinder debug region boundaries on the main video stream.
+ * Enabling the overlay also enables the changefinder. This overlay is independent
+ * of pulse_options_set_facedetection_draw_debug() and is for debugging only.
+ * It modifies video frames, including frames sent to remote participants, not just
+ * the local preview. Turning it off leaves the changefinder enabled.
+ * Default setting: False. The setting is retained when switching the main camera.
+ * @param client The Pulse handle
+ * @param draw_debug Whether to draw the changefinder debug overlay.
+ * @return PULSE_SUCCESS on success, or PULSE_ERROR_NOT_CONFIGURED if there is no
+ * main video input. On failure, stored options are unchanged.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_changefinder_draw_debug (Pulse * client, bool draw_debug);
 
 /**
  * @brief Set video scrambling to the main video stream.
@@ -858,6 +1042,68 @@ PulseError pulse_options_set_ice_candidate_active_ip_filtering (Pulse * client, 
 PULSE_EXPORT
 PulseError pulse_options_set_app_transport (Pulse * client, PulseAppPacketCallback cb, void * user_data,
                                             PulseDestroyCallback destroy_cb);
+
+/*
+ * OPTIONS BELOW ARE FOR TESTING PURPOSES ONLY. DO NOT USE IN PRODUCTION.
+ */
+
+/**
+ * @brief Disable TLS for all http connections, making all traffic unencrypted!
+ * Tells Pulse to use unencrypted HTTP communication for all connections.
+ * @param client The Pulse handle
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ * @note This is for TESTING PURPOSES ONLY and should never be used in a production environment!
+ */
+PULSE_EXPORT
+PulseError pulse_options_testing_disable_https (Pulse * client);
+
+/**
+ * @brief Enable or disable SDP session-name (`s=`) generation.
+ *
+ * When enabled, Pulse will populate the SDP session-name (`s=`) field with a
+ * derived value that may include user-provided data (e.g. display name), so this
+ * option is intended for testing only. Disabled by default.
+ * @param client The Pulse handle.
+ * @param enable TRUE to enable session-name generation, FALSE to disable it.
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ * @note This is for TESTING PURPOSES ONLY and should never be used in a production environment!
+ */
+PULSE_EXPORT
+PulseError pulse_options_testing_set_sdp_session_name (Pulse * client, bool enable);
+
+/**
+ * @brief Select whether outgoing video is encoded in hardware or software.
+ *
+ * Defaults to PULSE_VIDEO_CODEC_SOFTWARE. Hardware encoders are device
+ * specific, so the concrete encoder is chosen when a call starts rather than
+ * here. Asking for hardware on a device that exposes none is not an error, the
+ * software encoder is used instead. The preference is process-wide and remains
+ * in effect after @client is destroyed; setting it on one handle affects
+ * subsequently created pipelines for all handles.
+ * @param client The Pulse handle.
+ * @param preference The encoder to prefer.
+ * @return PULSE_SUCCESS (0) on success, PULSE_ERROR_ALREADY_CONNECTED if
+ * connected, or PULSE_ERROR_VALUE_OUT_OF_RANGE for an unsupported preference.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_video_encoder_preference (Pulse * client, PulseVideoCodecPreference preference);
+
+/**
+ * @brief Select whether incoming video is decoded in hardware or software.
+ *
+ * Defaults to PULSE_VIDEO_CODEC_SOFTWARE. Hardware decoders are device
+ * specific, so the concrete decoder is chosen when a call starts rather than
+ * here. Asking for hardware on a device that exposes none is not an error, the
+ * software decoder is used instead. The preference is process-wide and remains
+ * in effect after @client is destroyed; setting it on one handle affects
+ * subsequently created pipelines for all handles.
+ * @param client The Pulse handle.
+ * @param preference The decoder to prefer.
+ * @return PULSE_SUCCESS (0) on success, PULSE_ERROR_ALREADY_CONNECTED if
+ * connected, or PULSE_ERROR_VALUE_OUT_OF_RANGE for an unsupported preference.
+ */
+PULSE_EXPORT
+PulseError pulse_options_set_video_decoder_preference (Pulse * client, PulseVideoCodecPreference preference);
 
 PULSE_DECL_END
 

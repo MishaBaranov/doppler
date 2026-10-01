@@ -10,6 +10,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "pulse_config.h"
 #include "pulse_media.h"
 #include "pulse_conference.h"
@@ -76,10 +77,14 @@ typedef struct _PulseConferenceEventLayout PulseConferenceEventLayout;
 typedef struct _PulseConferenceEventStageSpeaker PulseConferenceEventStageSpeaker;
 typedef struct _PulseConferenceEventStage PulseConferenceEventStage;
 typedef struct _PulseConferenceEventLiveCaptions PulseConferenceEventLiveCaptions;
+typedef struct _PulseConferenceEventLiveCaptionsSource PulseConferenceEventLiveCaptionsSource;
+typedef struct _PulseConferenceEventLiveCaptionsSourceList PulseConferenceEventLiveCaptionsSourceList;
 
 typedef struct _PulseConferenceEventGeneric PulseConferenceEventGeneric;
 typedef struct _PulseConferenceEventFecc PulseConferenceEventFecc;
 typedef struct _PulseConferenceEventMessageReceived PulseConferenceEventMessageReceived;
+typedef struct _PulseConferenceEventChatMessageReceived PulseConferenceEventChatMessageReceived;
+typedef struct _PulseConferenceEventAppMessageReceived PulseConferenceEventAppMessageReceived;
 typedef struct _PulseConferenceEventPresentationStart PulseConferenceEventPresentationStart;
 
 typedef struct _PulseConferenceControlConferenceStatus PulseConferenceEventConferenceUpdate;
@@ -138,6 +143,52 @@ typedef enum
   PULSE_NETWORK_CONNECTIVITY_PORTAL = 3,
   PULSE_NETWORK_CONNECTIVITY_FULL = 4
 } PulseNetworkConnectivityLevel;
+
+/**
+ * @brief PulseIceTransportMask
+ * PulseIceTransportMask defines the transports ICE is allowed to gather and use candidates for.
+ * The values are bit flags, and are combined into a mask passed to pulse_options_set_allowed_ice_transport().
+ */
+typedef enum
+{
+  PULSE_ICE_TRANSPORT_UDP = 1,         /**< UDP candidates. */
+  PULSE_ICE_TRANSPORT_TCP_ACTIVE = 2,  /**< TCP candidates where we connect towards the peer. */
+  PULSE_ICE_TRANSPORT_TCP_PASSIVE = 4, /**< TCP candidates where we listen for the peer to connect. */
+} PulseIceTransportMask;
+
+/** @brief Every transport in #PulseIceTransportMask, which is also the default. */
+#define PULSE_ICE_TRANSPORT_MASK_ALL                                                                                   \
+  ((uint32_t)(PULSE_ICE_TRANSPORT_UDP | PULSE_ICE_TRANSPORT_TCP_ACTIVE | PULSE_ICE_TRANSPORT_TCP_PASSIVE))
+
+/**
+ * @brief PulseIceRelayTypeMask
+ * PulseIceRelayTypeMask defines the TURN transports Pulse is allowed to relay media over.
+ * The values are bit flags, and are combined into a mask passed to pulse_options_set_allowed_ice_turn_transport().
+ */
+typedef enum
+{
+  PULSE_ICE_RELAY_TYPE_TURN_UDP = 1, /**< A TURN relay using UDP. */
+  PULSE_ICE_RELAY_TYPE_TURN_TCP = 2, /**< A TURN relay using TCP. */
+  PULSE_ICE_RELAY_TYPE_TURN_TLS = 4, /**< A TURN relay using TLS over TCP. */
+} PulseIceRelayTypeMask;
+
+/** @brief Every relay type in #PulseIceRelayTypeMask, which is also the default. */
+#define PULSE_ICE_RELAY_TYPE_MASK_ALL                                                                                  \
+  ((uint32_t)(PULSE_ICE_RELAY_TYPE_TURN_UDP | PULSE_ICE_RELAY_TYPE_TURN_TCP | PULSE_ICE_RELAY_TYPE_TURN_TLS))
+
+/**
+ * @brief PulseIpVersionMask
+ * PulseIpVersionMask defines the IP versions Pulse is allowed to use.
+ * The values are bit flags, and are combined into a mask passed to pulse_options_set_ip_version_supported().
+ */
+typedef enum
+{
+  PULSE_IP_VERSION_V4 = 1 << 0, /**< IPv4. */
+  PULSE_IP_VERSION_V6 = 1 << 1, /**< IPv6. */
+} PulseIpVersionMask;
+
+/** @brief Both IP versions in #PulseIpVersionMask, which is also the default. */
+#define PULSE_IP_VERSION_MASK_ALL ((uint32_t)(PULSE_IP_VERSION_V4 | PULSE_IP_VERSION_V6))
 
 typedef uint64_t PulseTimestamp;
 
@@ -471,6 +522,32 @@ typedef void (*PulseConferenceEventMessageReceivedCallback) (PulseRoomId room_id
                                                              void * user_context);
 
 /**
+ * @brief PulseConferenceEventChatMessageReceivedCallback
+ * Callback function to retrieve chat messages ("text/plain") broadcasted to the conference.
+ * This is a filtered variant of PulseConferenceEventMessageReceivedCallback that only fires for messages whose content
+ * type is "text/plain". Because the content type is implied, the event uses the type-specific
+ * PulseConferenceEventChatMessageReceived structure, which has no content type member.
+ * @param event A PulseConferenceEventChatMessageReceived structure containing the event information.
+ * @param user_context The user context configured with this callback.
+ */
+typedef void (*PulseConferenceEventChatMessageReceivedCallback) (PulseRoomId room_id,
+                                                                 const PulseConferenceEventChatMessageReceived * event,
+                                                                 void * user_context);
+
+/**
+ * @brief PulseConferenceEventAppMessageReceivedCallback
+ * Callback function to retrieve application messages ("application/json") broadcasted to the conference.
+ * This is a filtered variant of PulseConferenceEventMessageReceivedCallback that only fires for messages whose content
+ * type is "application/json". Because the content type is implied, the event uses the type-specific
+ * PulseConferenceEventAppMessageReceived structure, which has no content type member.
+ * @param event A PulseConferenceEventAppMessageReceived structure containing the event information.
+ * @param user_context The user context configured with this callback.
+ */
+typedef void (*PulseConferenceEventAppMessageReceivedCallback) (PulseRoomId room_id,
+                                                                const PulseConferenceEventAppMessageReceived * event,
+                                                                void * user_context);
+
+/**
  * @brief PulseConferenceEventConferenceUpdateCallback
  * Callback function to retrieve an updated view of the conference state.
  * @param event A PulseConferenceEventConferenceUpdate structure containing the event information.
@@ -617,6 +694,16 @@ typedef void (*PulseAudioMuteStateChangedCallback) (bool client_mute_state, bool
                                                     void * user_context);
 
 /**
+ * @brief PulseAppDataCallback
+ * Callback delivering one binary message received on the app data channel.
+ * @param data The message bytes, only valid for the duration of the callback.
+ * @param size Number of bytes in @p data.
+ * @param user_context The user context configured with this callback.
+ * @note Called on a Pulse internal thread, not the thread that configured it.
+ */
+typedef void (*PulseAppDataCallback) (const uint8_t * data, size_t size, void * user_context);
+
+/**
  * @brief PulseBreakoutRoomPreTransferCallback
  * Callback function to inform about an imminent breakoutroom transfer.
  * @param breakout_room_name The name of the room the client is about to be transferred to.
@@ -715,6 +802,9 @@ struct _PulseConferenceStatusInfo
   PulseConnectionStatus status; // State of connection.
   bool is_blocked;              // While blocked, any attempt of calling connect/disconnect will fail.
   PulseConferenceServiceType current_service_type; // Only valid when is_connected == True
+  PulseConferenceCallType call_type; // The call type the conference is configured with server-side, limiting what
+                                     // media this call can carry at all. See PulseConferenceCallType. Only valid when
+                                     // is_connected == True, PULSE_CONFERENCE_CALL_TYPE_UNKNOWN otherwise.
 };
 
 /**
@@ -935,10 +1025,29 @@ struct _PulseConferenceEventStage
   const PulseConferenceEventStageSpeaker ** speakers;
 };
 
+/* A single source of a live captions utterance. Infinity currently reports only the participant uuid, but sends it
+   as an object so that further attributes can be added without breaking the wire format. */
+struct _PulseConferenceEventLiveCaptionsSource
+{
+  char * participant_uuid;
+};
+
+struct _PulseConferenceEventLiveCaptionsSourceList
+{
+  size_t list_size;
+  PulseConferenceEventLiveCaptionsSource * list;
+};
+
 struct _PulseConferenceEventLiveCaptions
 {
   char * data;
   bool is_final;
+  /* Infinity v43 members below. Absent on older servers, in which case src_lang and tgt_lang are NULL and sources is
+     empty. */
+  char * src_lang;     /* Source language configured for speech to text, NULL when not reported. */
+  char * tgt_lang;     /* Target language of the translation, NULL when not reported. */
+  char * orig_caption; /* Caption prior to translation, NULL when the caption was not translated. */
+  PulseConferenceEventLiveCaptionsSourceList sources; /* Participants this utterance came from, empty when not set. */
 };
 
 struct _PulseConferenceEventFecc
@@ -952,6 +1061,22 @@ struct _PulseConferenceEventMessageReceived
 {
   const char * origin;
   const char * type;
+  const char * payload;
+  const char * uuid;
+  bool direct;
+};
+
+struct _PulseConferenceEventChatMessageReceived
+{
+  const char * origin;
+  const char * payload;
+  const char * uuid;
+  bool direct;
+};
+
+struct _PulseConferenceEventAppMessageReceived
+{
+  const char * origin;
   const char * payload;
   const char * uuid;
   bool direct;
@@ -1040,6 +1165,7 @@ struct _PulseRestConnectionConfig
   const char * display_name;
   const char * conference_name;
   const char * pin_code;
+  const char * call_tag; /**< An optional call tag to assign to this participant. Leave as NULL to not assign one. */
 };
 
 struct _PulseTurnConfig
@@ -1157,6 +1283,15 @@ struct _PulseMediaRxStats
   uint32_t no_face_duration_ms;
   uint32_t non_movement_duration_ms;
   int32_t num_faces;
+
+  /** Face detection ROI, normalised to [0..1]: top-left x/y and width/height.
+   * All four fields are zero when unavailable (including audio or disabled detection).
+   * This struct layout change requires rebuilding the native library and bindings together.
+   */
+  float bbox_x;
+  float bbox_y;
+  float bbox_w;
+  float bbox_h;
 };
 
 struct _PulseMediaStats
@@ -1214,6 +1349,7 @@ struct _PulseInfo
   {
     const char * version;
     const char * ssl_version;
+    const char * const * protocols;
   } curl;
 };
 
@@ -1224,6 +1360,10 @@ struct _PulseSessionInfo
   char * conference_server;
   char * breakout_name;
   char * breakout_description;
+
+  /* Infinity v43 members below */
+  /* The human readable conference name configured on the server. NULL on older servers, which do not report it. */
+  char * conference_display_name;
 };
 
 typedef enum
@@ -1267,7 +1407,8 @@ struct _PulseProxyServerConfig
 
 typedef enum _PulseMessageContentType
 {
-  PULSE_MESSAGE_CONTENT_TYPE_PLAIN = 0 /* A plain text message. */
+  PULSE_MESSAGE_CONTENT_TYPE_CHAT = 0, /* A plain text message ("text/plain"). */
+  PULSE_MESSAGE_CONTENT_TYPE_APP = 1   /* An application JSON message ("application/json"). */
 } PulseMessageContentType;
 
 struct _PulseMessageRequest
@@ -1298,10 +1439,14 @@ typedef enum
 struct _PulseParticipantListSortingConfig
 {
   PulseParticipantListSortingOrder order; /* The sorting order */
-  bool reverse_order; /* Reverse the current sorting order. Does not override self_on_top or waiting_room_on_top */
-  bool self_on_top;   /* Show our own participant on top of the list. Takes precedence over waiting_room_on_top. */
+  bool reverse_order; /* Reverse the current sorting order. Does not override self_on_top, waiting_room_on_top or
+                         hosts_on_top */
+  bool self_on_top;   /* Show our own participant on top of the list. Takes precedence over waiting_room_on_top and
+                         hosts_on_top. */
   bool waiting_room_on_top; /* Show any waiting participants on top of the list, but always below own participant, if
-                               self_on_top is set. */
+                               self_on_top is set. Takes precedence over hosts_on_top. */
+  bool hosts_on_top;        /* Show participants with the host role on top of the list, but always below own
+                               participant and any waiting participants, if those options are set. */
 };
 
 struct _PulseTuneables

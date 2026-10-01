@@ -43,14 +43,29 @@ typedef enum _PulseConferenceProtocol
 
 /**
  * @brief Conference call type.
- * Defines the media capabilities of a conference call.
+ * The call type the conference is configured with server-side, on the Infinity management server, and reported back to
+ * us in the request_token response. This is the prime limiter of what is possible media-wise in that conference: it
+ * caps whatever the client asks for, so a client can negotiate less media than the call type allows, never more.
+ *
+ * It decides which media the call is permitted to carry:
+ *   - PULSE_CONFERENCE_CALL_TYPE_VIDEO:      audio, main video and presentation.
+ *   - PULSE_CONFERENCE_CALL_TYPE_VIDEO_ONLY: audio and main video. Presentation is not allowed.
+ *   - PULSE_CONFERENCE_CALL_TYPE_AUDIO:      audio alone. Neither main video nor presentation is allowed.
+ *
+ * This is a different thing from a client-side 'audio-only' call, which is not signalled as such at all: a client
+ * simply connects no main video input or output, and the resulting SDP then carries no main video media line. Such a
+ * client keeps its presentation media line, as long as the conference call type allows presentation. A
+ * presentation-only call is likewise a client-side construct, and needs a conference configured as
+ * PULSE_CONFERENCE_CALL_TYPE_VIDEO.
+ *
+ * @see https://docs.pexip.com/api_client/api_rest.htm#request_token
  */
 typedef enum _PulseConferenceCallType
 {
-  PULSE_CONFERENCE_CALL_TYPE_VIDEO = 0,  /* main video plus presentation. */
-  PULSE_CONFERENCE_CALL_TYPE_VIDEO_ONLY, /* main video only. */
-  PULSE_CONFERENCE_CALL_TYPE_AUDIO,      /* audio-only. */
-  PULSE_CONFERENCE_CALL_TYPE_UNKNOWN     /* unknown */
+  PULSE_CONFERENCE_CALL_TYPE_VIDEO = 0,  /* audio, main video and presentation. */
+  PULSE_CONFERENCE_CALL_TYPE_VIDEO_ONLY, /* audio and main video, no presentation. */
+  PULSE_CONFERENCE_CALL_TYPE_AUDIO,      /* audio alone, no main video and no presentation. */
+  PULSE_CONFERENCE_CALL_TYPE_UNKNOWN     /* the call type is not known, e.g. before we are connected. */
 } PulseConferenceCallType;
 
 /**

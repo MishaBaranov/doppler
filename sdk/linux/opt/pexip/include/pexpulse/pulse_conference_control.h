@@ -47,6 +47,9 @@ typedef struct _PulseConferenceControlLayoutSvgEntry PulseConferenceControlLayou
 typedef struct _PulseConferenceControlPinningConfigResponse PulseConferenceControlPinningConfigResponse;
 typedef struct _PulseConferenceControlMessageTextResponse PulseConferenceControlMessageTextResponse;
 typedef struct _PulseConferenceClassificationInfo PulseConferenceControlClassificationLevelResponse;
+typedef struct _PulseConferenceStringList PulseConferenceStringList;
+typedef struct _PulseConferenceCustomProperty PulseConferenceCustomProperty;
+typedef struct _PulseConferenceCustomPropertyList PulseConferenceCustomPropertyList;
 
 typedef enum _PulseConferenceStatusBreakoutRoomEndAction
 {
@@ -124,6 +127,27 @@ struct _PulseConferenceStatusMessageText
   char * set_time;
 };
 
+struct _PulseConferenceStringList
+{
+  size_t list_size;
+  char ** list;
+};
+
+/* A single custom property. Infinity reports custom properties as a json object, which is flattened into a list of
+   key/value pairs. Values that are not json strings (numbers, booleans, nested objects and arrays) are kept as their
+   raw json representation, so that clients can decode them as they see fit. */
+struct _PulseConferenceCustomProperty
+{
+  char * key;
+  char * value;
+};
+
+struct _PulseConferenceCustomPropertyList
+{
+  size_t list_size;
+  PulseConferenceCustomProperty * list;
+};
+
 struct _PulseConferenceControlConferenceStatus
 {
   bool locked; /* Conference lock state is hidden for guest participants, and will always be set false */
@@ -140,6 +164,33 @@ struct _PulseConferenceControlConferenceStatus
   PulseConferenceClassificationInfo * classification;
   bool guests_can_unmute;
   bool guests_can_present;
+
+  /* Infinity v39 members below (introduced in v39.1) */
+  bool ai_enabled;                /* AI features (such as smart notes) are enabled for the conference. */
+  bool external_media_processing; /* The conference media is processed by an external service. */
+  bool public_streaming;          /* The conference is being streamed publicly. */
+  bool recording;                 /* The conference is being recorded. */
+  bool streaming;                 /* The conference is being streamed. */
+  bool transcribing;              /* The conference is being transcribed. */
+
+  /* Infinity v40 members below */
+  bool chat_enabled; /* Chat is enabled for the conference. */
+
+  /* Infinity v41 members below */
+  PulseConferenceCustomPropertyList custom_properties;      /* Conference custom properties, empty when not set. */
+  PulseConferenceCustomPropertyList host_custom_properties; /* Host custom properties, empty when not set. */
+
+  /* Infinity v42 members below */
+  bool smart_notes_enabled;                                    /* Smart notes are enabled for the conference. */
+  PulseConferenceStringList live_captions_available_languages; /* Languages live captions can be translated into. */
+  PulseConferenceStringList live_captions_source_languages;    /* Languages live captions can be generated from. */
+
+  /* Infinity v43 members below */
+  bool allow_custom_mixes; /* Custom audio mixes may be requested for participants in the conference. */
+  /* The classification level currently active for the conference, NULL when the conference has no classification
+     level assigned. Note that this is a single level and is NOT the same as the classification member above, which
+     reports the whole set of levels available to the conference. */
+  PulseConferenceClassificationLevel * classification_level;
 };
 
 struct _PulseConferenceControlParticipantAudioMixEntry
@@ -239,6 +290,16 @@ struct _PulseConferenceControlParticipantEntry
   /* Infinity v38 members below */
   bool can_receive_personal_mix;
   PulseConferenceControlParticipantVideoMixEntry * receive_from_video_mix;
+
+  /* Infinity v42 members below */
+  bool is_external_media_processing; /* This participant's media is processed by an external service. */
+  bool is_smart_notes_enabled;       /* This participant has smart notes enabled. */
+  char * source_language;            /* The participant's spoken language, used for live captions/transcription. */
+  PulseConferenceCustomPropertyList custom_properties;         /* Participant custom properties, empty when not set. */
+  PulseConferenceCustomPropertyList private_custom_properties; /* Private custom properties, empty when not set. */
+
+  /* Infinity v43 members below */
+  bool is_client_video_muted; /* The participant has muted video locally, on the client side. */
 };
 
 struct _PulseConferenceControlTransformLayoutRequestSectionStreaming

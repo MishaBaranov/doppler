@@ -10,22 +10,28 @@
 //      2.  pulse_options_set_*()                 -> callbacks + NULL windows.
 //      3.  pulse_device_iterator_*()             -> find the camera.
 //          pulse_device_session_connect_device() -> bind it to MAIN video.
-//      4.  pulse_connect_with_rest_async()       -> join the conference.
-//      5.  wait for Ctrl-C / far-end hang-up.
+//      4.  pulse_options_set_app_data_channel()  -> receive key-control messages
+//          pulse_options_set_app_data_callback()    over the SCTP data channel.
+//          pulse_connect_with_rest_async()       -> join the conference.
+//      5.  wait for Ctrl-C / far-end hang-up, logging key presses.
 //      6.  pulse_disconnect() + pulse_free().
 //
 //  Usage:  picall <alias@server> [--pin PIN] [--name NAME] [--camera TEXT]
+//          picall --dev-vmr [conference] [--pin PIN] ...
 //          picall --list-devices
 // ============================================================================
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <unistd.h>
 
@@ -45,6 +51,7 @@ struct Options
     std::string ca_bundle    = "/etc/ssl/certs/ca-certificates.crt";
     bool        list_devices = false;
     bool        verbose      = false;
+    bool        dev_vmr      = false;
 };
 
 struct AppState
@@ -53,6 +60,11 @@ struct AppState
     std::atomic<int> status{PULSE_CONNECTION_STATUS_DISCONNECTED};
     std::atomic<bool> was_connected{false};
     std::atomic<bool> connect_failed{false};
+
+    // App data channel messages, handed from Pulse's thread to main().
+    std::mutex               inbox_mutex;
+    std::condition_variable  inbox_cv;
+    std::vector<std::string> inbox;
 };
 
 volatile std::sig_atomic_t g_stop = 0;
@@ -112,6 +124,68 @@ void on_pulse_log(void *, PulseDebugLevel level, const char * category,
                  category ? category : "?", message ? message : "");
 }
 
+// Runs on a Pulse media thread: copy the bytes (not NUL-terminated) and return.
+void on_app_data(const uint8_t * data, size_t size, void * user_context)
+{
+    auto * app = static_cast<AppState *>(user_context);
+    {
+        std::lock_guard<std::mutex> lock(app->inbox_mutex);
+        app->inbox.emplace_back(reinterpret_cast<const char *>(data), size);
+    }
+    app->inbox_cv.notify_one();
+}
+
+// ----------------------------------------------------------------------------
+//  Key-control messages: "<recipient display name>: KEY_<KEY>_<PRESS|RELEASE>"
+//  (see dcsctp_control.md).  The channel carries no sender identity.
+// ----------------------------------------------------------------------------
+
+bool ends_with(const std::string & s, const std::string & suffix)
+{
+    return s.size() >= suffix.size()
+        && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool is_known_key(const std::string & key)
+{
+    if (key.size() == 1)
+        return (key[0] >= 'A' && key[0] <= 'Z') || (key[0] >= '0' && key[0] <= '9');
+    return key == "UP" || key == "DOWN" || key == "LEFT" || key == "RIGHT";
+}
+
+void handle_control_message(const std::string & msg, const std::string & my_name)
+{
+    const std::string prefix = my_name + ": ";
+    if (msg.compare(0, prefix.size(), prefix) != 0) {
+        if (g_verbose.load())
+            std::fprintf(stderr, "picall: ignored %zu-byte app data message (not for us)\n",
+                         msg.size());
+        return;
+    }
+
+    const std::string cmd = msg.substr(prefix.size());
+    static const std::string kKey = "KEY_", kPress = "_PRESS", kRelease = "_RELEASE";
+    const char * action = nullptr;
+    std::string key;
+    if (cmd.compare(0, kKey.size(), kKey) == 0) {
+        if (ends_with(cmd, kPress) && cmd.size() > kKey.size() + kPress.size()) {
+            action = "pressed";
+            key = cmd.substr(kKey.size(), cmd.size() - kKey.size() - kPress.size());
+        } else if (ends_with(cmd, kRelease) && cmd.size() > kKey.size() + kRelease.size()) {
+            action = "released";
+            key = cmd.substr(kKey.size(), cmd.size() - kKey.size() - kRelease.size());
+        }
+    }
+    if (!action || !is_known_key(key)) {
+        if (g_verbose.load())
+            std::fprintf(stderr, "picall: ignored unknown %zu-byte command\n", cmd.size());
+        return;
+    }
+
+    std::printf("%s: key %s %s\n", my_name.c_str(), key.c_str(), action);
+    std::fflush(stdout);
+}
+
 // ----------------------------------------------------------------------------
 //  Command line
 // ----------------------------------------------------------------------------
@@ -120,6 +194,7 @@ void print_usage(const char * argv0)
 {
     std::fprintf(stderr,
         "Usage: %s <alias@server> [options]\n"
+        "       %s --dev-vmr [conference] [options]\n"
         "       %s --list-devices\n"
         "\n"
         "Joins a Pexip Infinity conference and sends camera video only.\n"
@@ -130,10 +205,12 @@ void print_usage(const char * argv0)
         "  --camera TEXT    use the first camera whose name contains TEXT\n"
         "  --ca-bundle PATH CA certificates file for TLS\n"
         "                   (default: /etc/ssl/certs/ca-certificates.crt)\n"
+        "  --dev-vmr        dial the lab VMR 192.168.1.38 (conference pextest1 unless\n"
+        "                   one is given) with TLS certificate checks OFF\n"
         "  --list-devices   print the cameras Pulse can see, then exit\n"
         "  -v, --verbose    print all Pulse log output\n"
         "  -h, --help       show this help\n",
-        argv0, argv0);
+        argv0, argv0, argv0);
 }
 
 // Returns false (after printing why) if the command line is unusable.
@@ -168,6 +245,8 @@ bool parse_args(int argc, char ** argv, Options & opt)
             const char * v = next_value("--ca-bundle");
             if (!v) return false;
             opt.ca_bundle = v;
+        } else if (arg == "--dev-vmr") {
+            opt.dev_vmr = true;
         } else if (arg == "--list-devices") {
             opt.list_devices = true;
         } else if (arg == "-v" || arg == "--verbose") {
@@ -184,6 +263,16 @@ bool parse_args(int argc, char ** argv, Options & opt)
     }
 
     if (opt.list_devices) return true;
+
+    if (opt.dev_vmr) {
+        // A bare argument is just the conference name; the server is fixed.
+        if (opt.alias.empty()) opt.alias = "pextest1";
+        opt.server = "192.168.1.38";
+        if (opt.pin.empty()) {
+            if (const char * env_pin = std::getenv("PICALL_PIN")) opt.pin = env_pin;
+        }
+        return true;
+    }
 
     // Same split pexninja uses: server = after the last '@', and the
     // conference name keeps the full alias.
@@ -314,6 +403,17 @@ int main(int argc, char ** argv)
                      opt.ca_bundle.c_str());
     }
 
+    if (opt.dev_vmr) {
+        // Lab VMR is reached by IP with a self-signed certificate.
+        PulseError e = pulse_options_disable_tls_peer_verification(app.pulse);
+        if (e == PULSE_SUCCESS) e = pulse_options_disable_tls_hostname_verification(app.pulse);
+        if (e == PULSE_SUCCESS) e = pulse_options_set_allow_direct_ip_connect(app.pulse, true);
+        if (e != PULSE_SUCCESS)
+            std::fprintf(stderr, "picall: could not apply --dev-vmr options: %s\n",
+                         pulse_strerror(e));
+        std::fprintf(stderr, "picall: WARNING TLS verification is disabled (--dev-vmr)\n");
+    }
+
     // Nothing is rendered: NULL handles stop Pulse from opening its own windows.
     pulse_options_set_self_view_window_handle         (app.pulse, nullptr);
     pulse_options_set_remote_video_window_handle      (app.pulse, nullptr);
@@ -348,6 +448,14 @@ int main(int argc, char ** argv)
     cfg.display_name    = opt.display_name.c_str();
     cfg.pin_code        = opt.pin.empty() ? nullptr : opt.pin.c_str();
 
+    // Both calls are refused once connected.  0 = default stream id 5.
+    err = pulse_options_set_app_data_channel(app.pulse, true, 0);
+    if (err == PULSE_SUCCESS)
+        err = pulse_options_set_app_data_callback(app.pulse, on_app_data, &app);
+    if (err != PULSE_SUCCESS)
+        std::fprintf(stderr, "picall: app data channel unavailable, key control off: %s\n",
+                     pulse_strerror(err));
+
     PulseAsyncOperationResultCallbackConfig result_cb{on_connect_result, &app};
     PulseOperationProgressCallbackConfig    progress_cb{on_progress, &app};
 
@@ -365,7 +473,15 @@ int main(int argc, char ** argv)
             std::fprintf(stderr, "picall: call ended by the far end\n");
             break;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::vector<std::string> messages;
+        {
+            std::unique_lock<std::mutex> lock(app.inbox_mutex);
+            app.inbox_cv.wait_for(lock, std::chrono::milliseconds(100),
+                                  [&] { return !app.inbox.empty(); });
+            messages.swap(app.inbox);
+        }
+        for (const std::string & msg : messages)
+            handle_control_message(msg, opt.display_name);
     }
 
     const int exit_code = app.connect_failed.load() ? 1 : 0;
@@ -377,7 +493,8 @@ int main(int argc, char ** argv)
     pulse_device_session_disconnect_main_video(app.pulse, PULSE_MEDIA_CONTENT_MAIN,
                                                PULSE_MEDIA_INPUT);
     pulse_device_free(camera);
-    // Clear the callback before pulse_free() so it can't fire on a dead AppState.
+    // Clear the callbacks before pulse_free() so they can't fire on a dead AppState.
+    pulse_options_set_app_data_callback(app.pulse, nullptr, nullptr);
     pulse_options_set_conference_state_callback(app.pulse, nullptr);
     pulse_free(app.pulse);
     return exit_code;

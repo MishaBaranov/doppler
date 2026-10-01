@@ -286,6 +286,10 @@ PulseError pulse_participant_control_avatar_jpg (Pulse * client, const char * ta
  * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
  * @note If target_participant_uuid is NULL (targeting this client), this can be called regardless of session role.
  * @note If target is specified, this function can only be called when the session has role HOST.
+ * @note If target_participant_uuid is NULL, updates are rate-limited/coalesced at 1 second: the first change after
+ * an idle period is sent to infinity immediately (leading edge), while any further changes within that 1 second
+ * window are coalesced and only the most recent value is sent, at most once per second. If target_participant_uuid
+ * is specified, the request is always sent immediately/synchronously and is not rate-limited.
  */
 PULSE_EXPORT
 PulseError pulse_participant_control_preferred_aspect_ratio (Pulse * client, const char * target_participant_uuid,
@@ -301,6 +305,10 @@ PulseError pulse_participant_control_preferred_aspect_ratio (Pulse * client, con
  * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
  * @note If target_participant_uuid is NULL (targeting this client), this can be called regardless of session role.
  * @note If target is specified, this function can only be called when the session has role HOST.
+ * @note If target_participant_uuid is NULL, updates are rate-limited/coalesced at 1 second: the first change after
+ * an idle period is sent to infinity immediately (leading edge), while any further changes within that 1 second
+ * window are coalesced and only the most recent value is sent, at most once per second. If target_participant_uuid
+ * is specified, the request is always sent immediately/synchronously and is not rate-limited.
  */
 PULSE_EXPORT
 PulseError pulse_participant_control_preferred_aspect_ratio_from_size (Pulse * client,
@@ -358,13 +366,21 @@ PulseError pulse_participant_control_receive_from_audio_mix (Pulse * client, con
  * Using this function, a participant can chose to receive live captions for the conference.
  * @param client The Pulse handle
  * @param target_participant_uuid UUID of the target participant. Set to NULL for targeting this client.
+ * @param captions_language Language to translate the captions into, for example "no-NB". Set to NULL to receive the
+ * captions untranslated. The languages a conference offers are reported by
+ * PulseConferenceControlConferenceStatus::live_captions_available_languages.
  * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
  * @note If target_participant_uuid is NULL (targeting this client), this can be called regardless of session role.
  * @note If target is specified, this function can only be called when the session has role HOST.
+ * @note PULSE_ERROR_INVALID_PARAMETER is returned if the server rejects captions_language, which happens when the
+ * language is unknown to it or is not offered by the conference.
+ * @note captions_language requires Infinity v43 or newer. When it is NULL nothing is sent, so older
+ * servers are unaffected.
  * @note THIS IS A BETA FEATURE! Not garanteed to work on all platforms, and API may change at any time.
  */
 PULSE_EXPORT
-PulseError pulse_participant_control_show_live_captions (Pulse * client, const char * target_participant_uuid);
+PulseError pulse_participant_control_show_live_captions (Pulse * client, const char * target_participant_uuid,
+                                                         const char * captions_language);
 
 /**
  * @brief Hide live captions.

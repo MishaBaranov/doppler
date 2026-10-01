@@ -74,11 +74,27 @@ call.
 | `--name NAME` | Display name shown to others (default `picall`). |
 | `--camera TEXT` | Use the first camera whose name contains `TEXT`. |
 | `--ca-bundle PATH` | CA certificates for TLS (default `/etc/ssl/certs/ca-certificates.crt`). |
+| `--dev-vmr [conference]` | Dial the lab VMR `192.168.1.38` (conference `pextest1` unless given) with TLS peer and hostname verification off. Lab use only. |
 | `--list-devices` | Print the cameras Pulse can see, then exit. |
 | `-v` | Print all Pulse log output, not just warnings and errors. |
 
 Exit codes: `0` normal hang-up, `1` the connect failed (wrong PIN, unreachable
 server, ...), `2` bad arguments or no camera.
+
+## Key control (app data channel)
+
+picall joins the Pulse app data channel (SCTP stream 5) and logs key presses
+another Pulse client sends to it, e.g. pexninja's "Send controls to" list. See
+[`dcsctp_control.md`](../../dcsctp_control.md) for the protocol.
+
+```
+pexcart1: key UP pressed
+pexcart1: key UP released
+```
+
+Only messages of the form `<picall's --name>: KEY_<KEY>_PRESS|RELEASE` are
+logged. The message doesn't say who sent it. Needs Pulse 1.0.18611 or newer,
+and the MCU must have `enable_app_datachannel` turned on.
 
 ## Troubleshooting
 

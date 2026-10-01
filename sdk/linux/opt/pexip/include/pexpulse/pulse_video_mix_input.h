@@ -10,7 +10,7 @@
 #include "pulse_error.h"
 #include "pulse_media.h"
 PULSE_DECL_BEGIN
-/* Lifecycle — called from pulse_init / pulse_dispose */
+/* Lifecycle — called from pulse_instance_init / pulse_dispose */
 void pulse_video_mix_input_init (Pulse * client);
 void pulse_video_mix_input_clear (Pulse * client);
 

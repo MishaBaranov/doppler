@@ -40,6 +40,40 @@
 PULSE_DECL_BEGIN
 
 /**
+ * @brief Initialise the PULSE library for this process.
+ *
+ * Must be called once, before any other PULSE function, if the process is
+ * going to create more than one Pulse instance (see pulse_new()), whether
+ * sequentially or concurrently. It keeps the library's shared resources alive
+ * for the lifetime of the process so that Pulse instances can be created and
+ * freed independently of each other.
+ *
+ * Calling it more than once is safe; subsequent calls are no-ops.
+ *
+ * Every successful call must be matched by a call to pulse_deinit() before the
+ * process exits.
+ *
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code on failure.
+ */
+PULSE_EXPORT
+PulseError pulse_init (void);
+
+/**
+ * @brief Release the resources acquired by pulse_init().
+ *
+ * Call this once at process shutdown, after every Pulse instance has been
+ * freed with pulse_free(). Calling it without a preceding pulse_init() is a
+ * no-op.
+ *
+ * NOTE: PULSE cannot be re-initialised within the same process; do not call
+ * pulse_init() again after pulse_deinit().
+ *
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code on failure.
+ */
+PULSE_EXPORT
+PulseError pulse_deinit (void);
+
+/**
  * @brief Set a callback function to which all log output will be sent to.
  * This registers a callback with the pulse logging system.
  * Note: This must be registered prior to instanciating a Pulse handle.
@@ -227,6 +261,15 @@ void pulse_set_max_bitrate (Pulse * client, uint32_t max_bps);
 PULSE_EXPORT
 uint32_t pulse_get_max_bitrate (Pulse * client);
 
+/**
+ * @brief Force an immediate SDP update for this client.
+ * Sets the internal rtp_force_update flag so the next RTP activity check
+ * triggers an SDP renegotiation. Intended for testing/diagnostics.
+ * @param client The Pulse handle
+ */
+PULSE_EXPORT
+void pulse_force_sdp_update (Pulse * client);
+
 PULSE_EXPORT
 bool pulse_is_connected (Pulse * client);
 
@@ -268,6 +311,27 @@ PulseError pulse_mute_audio_input (Pulse * client, bool mute);
  */
 PULSE_EXPORT
 PulseError pulse_mute_video_input (Pulse * client, bool mute);
+
+/**
+ * @brief pulse_duplicate_input
+ * Duplicate a local input from one client onto another client.
+ *
+ * Looks up the active local input of the given @p media_content and
+ * @p media_type on the @p src_client, fetches its underlying PMX input id (and
+ * associated metadata such as session type) and registers the very same input
+ * on the @p client, exactly as if it had been added locally on @p client.
+ *
+ * @param client The Pulse handle that should receive a copy of the input.
+ * @param src_client The Pulse handle that already owns the input to duplicate.
+ * @param media_content The media content of the input to duplicate.
+ * @param media_type The media type of the input to duplicate.
+ * @return PULSE_SUCCESS (0) on success, PULSE_ERROR_INVALID_HANDLE if either
+ * handle is invalid, or PULSE_ERROR_UNEXPECTED_STATE if @p src_client has no input
+ * registered for @p media_content and @p media_type.
+ */
+PULSE_EXPORT
+PulseError pulse_duplicate_input (Pulse * client, Pulse * src_client, PulseMediaContent media_content,
+                                  PulseMediaType media_type);
 
 /**
  * @brief Get the server version of the conference host
@@ -383,6 +447,17 @@ PULSE_EXPORT
 PulseError pulse_session_get_rtmp_enabled (Pulse * client, bool * state);
 
 /**
+ * @brief Is buzz (raise hand) enabled for the conference?
+ * This function returns true if buzz is enabled, and false otherwise.
+ * Infinity v42 and newer. Older servers do not report this and will always return false.
+ * @param client The Pulse handle
+ * @param state A pointer to a bool type. Upon successful return, the result will be written here.
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_session_get_buzz_enabled (Pulse * client, bool * state);
+
+/**
  * @brief Get the client role in the conference.
  * This function returns the clients role in the conferece, either PULSE_CONFERENCE_ROLE_HOST or
  * PULSE_CONFERENCE_ROLE_GUEST.
@@ -439,9 +514,52 @@ PulseError pulse_media_input_presentation_set_rotation (Pulse * client, PulseMed
  * be sent to all participants. In a direct media call, this is not used.
  * @param request A pointer to a PulseMessageRequest struct type with all necessary arguments filled in.
  * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ * @deprecated Use the type specific functions instead (pulse_send_chat_message/pulse_send_app_message).
  */
 PULSE_EXPORT
 PulseError pulse_send_message (Pulse * client, const char * target_participant_uuid, PulseMessageRequest * request);
+
+/**
+ * @brief Send a chat ("text/plain") message to one or all participants.
+ * This function sends a plain-text chat message to all participants in the conference.
+ * @param client The Pulse handle
+ * @param target_participant_uuid A string containing the uuid of the participant to send message to. If NULL, it will
+ * be sent to all participants. In a direct media call, this is not used.
+ * @param payload The message payload to send.
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_send_chat_message (Pulse * client, const char * target_participant_uuid, const char * payload);
+
+/**
+ * @brief Send an application ("application/json") message to one or all participants.
+ * This function sends an application JSON message to all participants in the conference.
+ * @param client The Pulse handle
+ * @param target_participant_uuid A string containing the uuid of the participant to send message to. If NULL, it will
+ * be sent to all participants. In a direct media call, this is not used.
+ * @param payload The message payload to send.
+ * @return PULSE_SUCCESS (0) on success, or a PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_send_app_message (Pulse * client, const char * target_participant_uuid, const char * payload);
+
+/**
+ * @brief Largest message accepted by pulse_send_app_data (the default SCTP max-message-size).
+ */
+#define PULSE_APP_DATA_MAX_SIZE 64000
+
+/**
+ * @brief Send a binary message on the app data channel.
+ * Requires pulse_options_set_app_data_channel to be enabled and the data channel to be established. Delivery is
+ * ordered and reliable.
+ * @param client The Pulse handle
+ * @param data The message bytes.
+ * @param size Number of bytes, 1 to PULSE_APP_DATA_MAX_SIZE.
+ * @return PULSE_SUCCESS (0) on success, PULSE_ERROR_UNEXPECTED_STATE if the data channel is not available, or
+ * another PulseError code in case of a failure.
+ */
+PULSE_EXPORT
+PulseError pulse_send_app_data (Pulse * client, const uint8_t * data, size_t size);
 
 /**
  * @brief Feed an inbound packet into the client.
