@@ -13,7 +13,9 @@
 //      4.  pulse_options_set_app_data_channel()  -> receive key-control messages
 //          pulse_options_set_app_data_callback()    over the SCTP data channel.
 //          pulse_connect_with_rest_async()       -> join the conference.
-//      5.  wait for Ctrl-C / far-end hang-up, logging key presses.
+//      5.  wait for Ctrl-C / far-end hang-up; key presses and "piracer ..."
+//          commands drive a PiRacer chassis over I2C (see piracer.hpp); its
+//          OLED shows the display name.
 //      6.  pulse_disconnect() + pulse_free().
 //
 //  Usage:  picall <alias@server> [--pin PIN] [--name NAME] [--camera TEXT]
@@ -28,14 +30,20 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <unistd.h>
+#include <arpa/inet.h>
 
 #include <pexpulse/pulse.h>
+
+#include "i2c_bus.hpp"
+#include "piracer.hpp"
+#include "ssd1306.hpp"
 
 namespace {
 
@@ -49,6 +57,9 @@ struct Options
     // The arm64 Pulse build's OpenSSL looks for CAs in a build-machine path,
     // so point it at the distro bundle.
     std::string ca_bundle    = "/etc/ssl/certs/ca-certificates.crt";
+    std::string i2c_bus      = "/dev/i2c-1";
+    bool        no_piracer   = false;
+    bool        insecure     = false; // skip TLS peer and hostname verification
     bool        list_devices = false;
     bool        verbose      = false;
     bool        dev_vmr      = false;
@@ -136,8 +147,9 @@ void on_app_data(const uint8_t * data, size_t size, void * user_context)
 }
 
 // ----------------------------------------------------------------------------
-//  Key-control messages: "<recipient display name>: KEY_<KEY>_<PRESS|RELEASE>"
-//  (see dcsctp_control.md).  The channel carries no sender identity.
+//  Control messages: "<recipient display name>: KEY_<KEY>_<PRESS|RELEASE>" or
+//  "<recipient display name>: piracer <subcommand> ..." (see dcsctp_control.md
+//  and README.md).  The channel carries no sender identity.
 // ----------------------------------------------------------------------------
 
 bool ends_with(const std::string & s, const std::string & suffix)
@@ -146,14 +158,21 @@ bool ends_with(const std::string & s, const std::string & suffix)
         && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+bool is_ip_address(const std::string & s)
+{
+    unsigned char buf[sizeof(in6_addr)];
+    return inet_pton(AF_INET, s.c_str(), buf) == 1 || inet_pton(AF_INET6, s.c_str(), buf) == 1;
+}
+
 bool is_known_key(const std::string & key)
 {
     if (key.size() == 1)
         return (key[0] >= 'A' && key[0] <= 'Z') || (key[0] >= '0' && key[0] <= '9');
-    return key == "UP" || key == "DOWN" || key == "LEFT" || key == "RIGHT";
+    return key == "UP" || key == "DOWN" || key == "LEFT" || key == "RIGHT" || key == "SHIFT";
 }
 
-void handle_control_message(const std::string & msg, const std::string & my_name)
+void handle_control_message(const std::string & msg, const std::string & my_name,
+                            piracer::Controller * car)
 {
     const std::string prefix = my_name + ": ";
     if (msg.compare(0, prefix.size(), prefix) != 0) {
@@ -164,12 +183,22 @@ void handle_control_message(const std::string & msg, const std::string & my_name
     }
 
     const std::string cmd = msg.substr(prefix.size());
+    if (piracer::Controller::is_command(cmd)) {
+        if (car)
+            car->handle_command(cmd, piracer::Clock::now());
+        else
+            std::fprintf(stderr, "picall: piracer command ignored, car control is off\n");
+        return;
+    }
+
     static const std::string kKey = "KEY_", kPress = "_PRESS", kRelease = "_RELEASE";
     const char * action = nullptr;
+    bool pressed = false;
     std::string key;
     if (cmd.compare(0, kKey.size(), kKey) == 0) {
         if (ends_with(cmd, kPress) && cmd.size() > kKey.size() + kPress.size()) {
             action = "pressed";
+            pressed = true;
             key = cmd.substr(kKey.size(), cmd.size() - kKey.size() - kPress.size());
         } else if (ends_with(cmd, kRelease) && cmd.size() > kKey.size() + kRelease.size()) {
             action = "released";
@@ -184,6 +213,7 @@ void handle_control_message(const std::string & msg, const std::string & my_name
 
     std::printf("%s: key %s %s\n", my_name.c_str(), key.c_str(), action);
     std::fflush(stdout);
+    if (car) car->on_key(key, pressed, piracer::Clock::now());
 }
 
 // ----------------------------------------------------------------------------
@@ -193,7 +223,8 @@ void handle_control_message(const std::string & msg, const std::string & my_name
 void print_usage(const char * argv0)
 {
     std::fprintf(stderr,
-        "Usage: %s <alias@server> [options]\n"
+        "Usage: %s <alias@server> [options]   (server may be an IP address,\n"
+        "                                      e.g. pextest1@127.0.0.1)\n"
         "       %s --dev-vmr [conference] [options]\n"
         "       %s --list-devices\n"
         "\n"
@@ -205,6 +236,10 @@ void print_usage(const char * argv0)
         "  --camera TEXT    use the first camera whose name contains TEXT\n"
         "  --ca-bundle PATH CA certificates file for TLS\n"
         "                   (default: /etc/ssl/certs/ca-certificates.crt)\n"
+        "  --i2c-bus PATH   PiRacer I2C bus (default: /dev/i2c-1)\n"
+        "  --no-piracer     do not touch the I2C bus; ignore car commands\n"
+        "  --insecure       do not verify the server's TLS certificate or host name\n"
+        "                   (needed for self-signed certificates, e.g. when dialling an IP)\n"
         "  --dev-vmr        dial the lab VMR 192.168.1.38 (conference pextest1 unless\n"
         "                   one is given) with TLS certificate checks OFF\n"
         "  --list-devices   print the cameras Pulse can see, then exit\n"
@@ -245,8 +280,17 @@ bool parse_args(int argc, char ** argv, Options & opt)
             const char * v = next_value("--ca-bundle");
             if (!v) return false;
             opt.ca_bundle = v;
+        } else if (arg == "--i2c-bus") {
+            const char * v = next_value("--i2c-bus");
+            if (!v) return false;
+            opt.i2c_bus = v;
+        } else if (arg == "--no-piracer") {
+            opt.no_piracer = true;
+        } else if (arg == "--insecure") {
+            opt.insecure = true;
         } else if (arg == "--dev-vmr") {
             opt.dev_vmr = true;
+            opt.insecure = true;
         } else if (arg == "--list-devices") {
             opt.list_devices = true;
         } else if (arg == "-v" || arg == "--verbose") {
@@ -403,15 +447,21 @@ int main(int argc, char ** argv)
                      opt.ca_bundle.c_str());
     }
 
-    if (opt.dev_vmr) {
-        // Lab VMR is reached by IP with a self-signed certificate.
+    // A bare IP address as the server needs Pulse's explicit opt-in.
+    if (is_ip_address(opt.server)) {
+        PulseError e = pulse_options_set_allow_direct_ip_connect(app.pulse, true);
+        if (e != PULSE_SUCCESS)
+            std::fprintf(stderr, "picall: could not allow connecting to an IP address: %s\n",
+                         pulse_strerror(e));
+    }
+
+    if (opt.insecure) {
         PulseError e = pulse_options_disable_tls_peer_verification(app.pulse);
         if (e == PULSE_SUCCESS) e = pulse_options_disable_tls_hostname_verification(app.pulse);
-        if (e == PULSE_SUCCESS) e = pulse_options_set_allow_direct_ip_connect(app.pulse, true);
         if (e != PULSE_SUCCESS)
-            std::fprintf(stderr, "picall: could not apply --dev-vmr options: %s\n",
+            std::fprintf(stderr, "picall: could not disable TLS verification: %s\n",
                          pulse_strerror(e));
-        std::fprintf(stderr, "picall: WARNING TLS verification is disabled (--dev-vmr)\n");
+        std::fprintf(stderr, "picall: WARNING TLS verification is disabled\n");
     }
 
     // Nothing is rendered: NULL handles stop Pulse from opening its own windows.
@@ -440,6 +490,43 @@ int main(int argc, char ** argv)
         pulse_options_set_conference_state_callback(app.pulse, nullptr);
         pulse_free(app.pulse);
         return 2;
+    }
+
+    // The camera sits upside down on the chassis.
+    err = pulse_media_input_main_set_rotation(app.pulse, PULSE_MEDIA_ROTATION_180);
+    if (err != PULSE_SUCCESS)
+        std::fprintf(stderr, "picall: could not rotate main video: %s\n", pulse_strerror(err));
+
+    // PiRacer chassis. Starting it now arms the ESC while the call is being set up.
+    // If the bus is unusable picall carries on as a plain video caller.
+    std::unique_ptr<piracer::LinuxI2cBus>  car_bus;
+    std::unique_ptr<piracer::Controller>   car;
+    std::unique_ptr<piracer::Ssd1306>      oled;
+    if (!opt.no_piracer) {
+        try {
+            car_bus = std::make_unique<piracer::LinuxI2cBus>(opt.i2c_bus);
+        } catch (const std::exception & e) {
+            std::fprintf(stderr, "picall: car control off: %s\n", e.what());
+        }
+    }
+    if (car_bus) {
+        car = std::make_unique<piracer::Controller>(
+            *car_bus, piracer::ControllerConfig{},
+            [](const std::string & line) { std::fprintf(stderr, "%s\n", line.c_str()); });
+        if (!car->start(piracer::Clock::now())) car.reset();
+
+        // The panel is optional; a missing one only costs the name tag.
+        try {
+            oled = std::make_unique<piracer::Ssd1306>(*car_bus, 0x3C, piracer::OledSize::W128H32);
+            oled->init(false);
+            oled->clear();
+            // 10 characters per line at scale 2, 21 at scale 1.
+            oled->draw_text(opt.display_name, opt.display_name.size() <= 20 ? 2 : 1);
+            oled->flush();
+        } catch (const std::exception & e) {
+            std::fprintf(stderr, "picall: OLED unavailable: %s\n", e.what());
+            oled.reset();
+        }
     }
 
     PulseRestConnectionConfig cfg{};
@@ -476,15 +563,26 @@ int main(int argc, char ** argv)
         std::vector<std::string> messages;
         {
             std::unique_lock<std::mutex> lock(app.inbox_mutex);
-            app.inbox_cv.wait_for(lock, std::chrono::milliseconds(100),
+            // Short wait: it is also the resolution of the car's timers.
+            app.inbox_cv.wait_for(lock, std::chrono::milliseconds(20),
                                   [&] { return !app.inbox.empty(); });
             messages.swap(app.inbox);
         }
         for (const std::string & msg : messages)
-            handle_control_message(msg, opt.display_name);
+            handle_control_message(msg, opt.display_name, car.get());
+        if (car) car->tick(piracer::Clock::now());
     }
 
     const int exit_code = app.connect_failed.load() ? 1 : 0;
+
+    if (car) car->shutdown();
+    if (oled) {
+        try {
+            oled->clear();
+            oled->flush();
+        } catch (const std::exception &) {
+        }
+    }
 
     if (pulse_is_connected(app.pulse)) {
         std::fprintf(stderr, "picall: hanging up\n");

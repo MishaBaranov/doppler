@@ -104,3 +104,9 @@ add a row to the table above. The full walk-through — including the convention
 that keep every demo easy to build and run — is in
 [`docs/adding-a-demo.md`](docs/adding-a-demo.md), and the SDK orientation for
 agents and humans alike is in [`AGENTS.md`](AGENTS.md).
+
+## Run WiFi Access Point on ubuntu
+
+```
+sudo nmcli device wifi hotspot ifname wlp194s0 band bg channel 11 ssid pexcart password "slewy436"
+```
